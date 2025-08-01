@@ -1,4 +1,4 @@
-# vibedash
+# VibeDash
 Vibe Coding front-end utility
 
 This is a small program to simplify vibe coding, while keep being mostly AI agnostic.
