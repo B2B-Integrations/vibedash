@@ -1,0 +1,1150 @@
+=== PATCH ===
+
+--- FILE: src/dashGenerateJs-snapshot.js ---
+function generateJS_SNAP() {
+   
+   return `
+       
+       async function createSnapshot() {
+           setStatus('Creating snapshot...');
+           try {
+               const result = await apiCall('snapshot', 'POST');
+               const statusInfo = result.count + ' files captured';
+               setStatus('Snapshot created: ' + result.name, statusInfo);
+               loadSnapshots();
+           } catch (err) {
+               setStatus('Error: ' + err.message);
+           }
+       }
+       
+       async function loadSnapshots() {
+           try {
+               const snapshots = await apiCall('snapshots');
+               const snapshotsList = document.getElementById('snapshots-list');
+               
+               if (snapshots.length === 0) {
+                   snapshotsList.innerHTML = '<div class="empty-state">No snapshots yet</div>';
+                   return;
+               }
+               
+               const snapshotItems = snapshots.map(function(snapshot) {
+                   const date = new Date(snapshot.timestamp);
+                   const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                   const dateStr = date.toLocaleDateString();
+                   
+                   // Different icons for different snapshot types
+                   const icon = snapshot.type === 'patch' ? '🔧' : '📸';
+                   const typeLabel = snapshot.type === 'patch' ? ' (pre-patch)' : '';
+                   
+                   // Clean up the display name by removing "snapshot-" prefix
+                   let displayName = snapshot.name.replace('snapshot-', '');
+                   if (displayName.startsWith('pre-')) {
+                       displayName = displayName.replace('pre-', 'pre-');  // Keep pre- prefix for clarity
+                   }
+                   
+                   return '<div class="list-item">' +
+                       '<span class="item-main">' + icon + ' ' + displayName + typeLabel + '</span>' +
+                       '<span class="item-meta">' + dateStr + ' ' + timeStr + ' • ' + snapshot.count + ' files</span>' +
+                       '<a class="item-link" onclick="restoreSnapshot(&quot;' + snapshot.name + '&quot;)" href="javascript:void(0)">restore</a>' +
+                       '</div>';
+               });
+               snapshotsList.innerHTML = snapshotItems.join('\\n');
+           } catch (err) {
+               setStatus('Error loading snapshots: ' + err.message);
+           }
+       }
+       
+       async function restoreSnapshot(snapshotName) {
+           const confirmMsg = 'Restore snapshot "' + snapshotName + '"? This will overwrite current files.';
+           if (!confirm(confirmMsg)) return;
+           
+           setStatus('Restoring snapshot...');
+           try {
+               const result = await apiCall('restore/' + snapshotName, 'POST');
+               const statusText = 'Snapshot restored: ' + result.restored.length + ' files restored';
+               const statusInfo = result.errors.length ? result.errors.length + ' errors' : '';
+               setStatus(statusText, statusInfo);
+               refreshStatus();
+               loadDirectoryTree();
+           } catch (err) {
+               setStatus('Error: ' + err.message);
+           }
+       }
+       `;
+ }
+module.exports = { generateJS_SNAP };
+--- ENDFILE ---
+
+--- FILE: src/dashGenerateJs.js ---
+const { generateJS_PRJ } = require('./dashGenerateJs-projects.js'); 
+const { generateJS_SNAP } = require('./dashGenerateJs-snapshot.js'); 
+
+function generateJS() {
+   
+   return `
+       let currentFiles = [];
+       let lastTestOutput = '';
+       let patchHistory = [];
+       let currentPatchContent = '';
+
+       ` + generateJS_PRJ() + `
+       ` + generateJS_SNAP() + `
+       
+       async function apiCall(endpoint, method, data) {
+           method = method || 'GET';
+           const options = { method: method, headers: { 'Content-Type': 'application/json' } };
+           if (data) options.body = JSON.stringify(data);
+           
+           const response = await fetch('/api/' + endpoint, options);
+           return await response.json();
+       }
+       
+       function setStatus(text, info) {
+           info = info || '';
+           document.getElementById('status-text').textContent = text;
+           document.getElementById('status-info').textContent = info;
+       }
+       
+       function showPreview(content, title) {
+           title = title || 'Output Preview';
+           const preview = document.getElementById('preview');
+           const previewContent = document.getElementById('preview-content');
+           preview.style.display = 'block';
+           const truncated = content.length > 2000 ? content.slice(0, 2000) + '\\n... (truncated for display)' : content;
+           previewContent.textContent = truncated;
+       }
+       
+       async function copyToClipboard(text) {
+           try {
+               await navigator.clipboard.writeText(text);
+               return true;
+           } catch (err) {
+               console.error('Failed to copy:', err);
+               return false;
+           }
+       }
+       
+        // Client-side patch parser that respects ENDFILE boundaries
+        // Fixed client-side patch parser that respects ENDFILE boundaries
+
+        function parseInputType(input) {
+            const lines = input.split('\\\\n');
+        let nestingLevel = 0;
+        let foundPatch = false;
+        let foundRequest = false;
+        let foundRequestFiles = false;
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            
+            // Track nesting level like server parser
+            if (line.startsWith('--- FILE:')) {
+                nestingLevel = 1;
+                continue; // Skip to next line, don't process this line further
+            }
+            
+            if (line.startsWith('--- ENDFILE ---')) {
+                nestingLevel = 0;
+                continue; // Skip to next line, don't process this line further
+            }
+            
+            // Only look for commands at root level (nestingLevel === 0)
+            if (nestingLevel === 0) {
+                if (line.startsWith('=== PATCH ===')) {
+                    foundPatch = true;
+                }
+                
+                if (line.startsWith('=== REQUEST ===')) {
+                    foundRequest = true;
+                }
+                
+                if (line.startsWith('REQUEST_FILES:')) {
+                    foundRequestFiles = true;
+                }
+            }
+            // If nestingLevel > 0, we're inside file content, so ignore all commands
+        }
+        
+        // Determine type based on what we found outside file content
+        if (foundRequest || foundRequestFiles) {
+            return 'request';
+        } else if (foundPatch) {
+            return 'patch';
+        } else {
+            return 'unknown';
+        }
+    }
+       
+       async function loadPatchHistory() {
+           try {
+               patchHistory = await apiCall('patches');
+               updatePatchHistoryDisplay();
+           } catch (err) {
+               console.error('Error loading patch history:', err);
+               document.getElementById('patch-history-content').textContent = 'Error loading patch history';
+           }
+       }
+       
+       function updatePatchHistoryDisplay() {
+           const historyContent = document.getElementById('patch-history-content');
+           
+           if (patchHistory.length === 0) {
+               historyContent.innerHTML = '<div class="empty-state">No patches applied yet</div>';
+               return;
+           }
+           
+           const historyItems = patchHistory.map(function(item, index) {
+               const date = new Date(item.timestamp);
+               const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+               const dateStr = date.toLocaleDateString();
+               const status = item.success ? '✓' : '✗';
+               const statusColor = item.success ? '#10b981' : '#ef4444';
+               const patchNumber = item.name || 'p' + (item.number || (index + 1));
+               
+               return '<div class="list-item">' +
+                   '<span class="item-main" style="color: ' + statusColor + '">' + status + ' ' + patchNumber + '</span>' +
+                   '<span class="item-meta">' + dateStr + ' ' + timeStr + ' • ' + item.files + ' files • ' + item.errors + ' errors</span>' +
+                   '<a class="item-link" onclick="showPatchDetails(&quot;' + item.name + '&quot;)" href="javascript:void(0)">view</a>' +
+                   '</div>';
+           });
+           
+           historyContent.innerHTML = historyItems.join('\\n');
+       }
+       
+       async function showPatchDetails(patchName) {
+           try {
+               const item = await apiCall('patch/' + patchName);
+               const modal = document.getElementById('patch-modal');
+               const details = document.getElementById('patch-details');
+               
+               const date = new Date(item.timestamp);
+               const fullDate = date.toLocaleString();
+               const status = item.success ? '✅ SUCCESS' : '❌ FAILED';
+               
+               let resultDetails = '';
+               if (item.result.applied && item.result.applied.length > 0) {
+                   resultDetails += '<div><strong>Files Applied:</strong> ' + item.result.applied.join(', ') + '</div>';
+               }
+               if (item.result.errors && item.result.errors.length > 0) {
+                   resultDetails += '<div><strong>Errors:</strong></div>';
+                   item.result.errors.forEach(function(error) {
+                       resultDetails += '<div style="color: #ef4444; font-size: 0.875rem; margin-left: 1rem;">' + 
+                           error.file + ': ' + error.error + '</div>';
+                   });
+               }
+               
+               let snapshotInfo = '';
+               if (item.snapshot) {
+                   snapshotInfo = '<div><strong>Snapshot Created:</strong> ' + item.snapshot + '</div>';
+               }
+               
+               details.innerHTML = 
+                   '<div><strong>Patch:</strong> ' + item.name + '</div>' +
+                   '<div><strong>Applied:</strong> ' + fullDate + '</div>' +
+                   '<div><strong>Status:</strong> ' + status + '</div>' +
+                   '<div><strong>Files Changed:</strong> ' + item.files + '</div>' +
+                   '<div><strong>Errors:</strong> ' + item.errors + '</div>' +
+                   snapshotInfo +
+                   resultDetails +
+                   '<h4 style="margin-top: 1rem;">Patch Content:</h4>' +
+                   '<div class="test-output" style="max-height: 30rem;">' + item.patch + '</div>';
+               
+               currentPatchContent = item.patch;
+               modal.classList.add('show');
+           } catch (err) {
+               setStatus('Error loading patch details: ' + err.message);
+           }
+       }
+       
+       function closePatchModal() {
+           document.getElementById('patch-modal').classList.remove('show');
+       }
+       
+       async function copyPatchContent() {
+           if(currentPatchContent) {
+              const copied = await copyToClipboard(currentPatchContent);
+              setStatus(copied ? 'Patch content copied to clipboard' : 'Failed to copy patch content');
+          }
+      }
+      
+      async function clearPatchHistory() {
+          if (confirm('Clear all patch history? This cannot be undone.')) {
+              try {
+                  const result = await apiCall('clear-patches', 'POST');
+                  await loadPatchHistory();
+                  setStatus('Patch history cleared: ' + result.deletedCount + ' patches removed');
+                  refreshStatus();
+              } catch (err) {
+                  setStatus('Error clearing patch history: ' + err.message);
+              }
+          }
+      }
+      
+      async function applyPatch() {
+          const patchInput = document.getElementById('patch-input');
+          const patch = patchInput.value.trim();
+          
+          if (!patch) {
+              setStatus('No patch input provided');
+              return;
+          }
+          
+          setStatus('Applying patch...');
+          try {
+              const inputType = parseInputType(patch);
+              
+              if (inputType === 'request') {
+                  //const match = patch.match(/REQUEST_FILES:\\s*(.+)/);
+                  const match = patch.match(/REQUEST_FILES:\\s*([^">\\r\\n]+)/);
+                  const files = match ? match[1].split(',').map(function(f) { return f.trim(); }) : [];
+                  const result = await apiCall('request', 'POST', { files: files });
+                  const copied = await copyToClipboard(result.response);
+                  const statusText = copied ? 'Request response copied to clipboard!' : 'Request processed (copy failed)';
+                  const statusInfo = result.found.length + ' found, ' + result.notFound.length + ' not found';
+                  setStatus(statusText, statusInfo);
+                  showPreview(result.response, 'Request Response');
+              } else if (inputType === 'patch') {
+                  const result = await apiCall('patch', 'POST', { patch: patch });
+                  const statusText = 'Patch applied: ' + result.applied.length + ' files updated';
+                  const statusInfo = result.errors.length ? result.errors.length + ' errors' : '';
+                  setStatus(statusText, statusInfo);
+                  
+                  // Reload patch history and snapshots from server
+                  await loadPatchHistory();
+                  await loadSnapshots();
+                  
+                  patchInput.value = '';
+                  refreshStatus();
+                  loadDirectoryTree();
+              } else {
+                  setStatus('Error: Could not determine if input is a patch or request');
+              }
+          } catch (err) {
+              setStatus('Error: ' + err.message);
+          }
+      }
+      
+      
+      async function runTest() {
+          setStatus('Running test...');
+          try {
+              const result = await apiCall('test', 'POST');
+              displayTestResults(result);
+              
+              // Copy to clipboard
+              const output = result.success ? result.output : result.error;
+              await copyToClipboard(output);
+              
+              setStatus(result.success ? 'Test completed successfully' : 'Test failed', 
+                       'Output copied to clipboard');
+          } catch (err) {
+              setStatus('Error running test: ' + err.message);
+          }
+      }
+      
+      function displayTestResults(result) {
+          const modal = document.getElementById('test-modal');
+          const resultsDiv = document.getElementById('test-results');
+          
+          const statusClass = result.success ? 'test-success' : 'test-error';
+          const statusText = result.success ? '✅ PASSED' : '❌ FAILED';
+          const exitText = result.exitCode !== undefined ? ' (Exit code: ' + result.exitCode + ')' : '';
+          
+          let output = result.output || '';
+          let errorOutput = result.error || '';
+          
+          resultsDiv.innerHTML = 
+              '<div><strong>Command:</strong> ' + result.command + '</div>' +
+              '<div><strong>Status:</strong> ' + statusText + exitText + '</div>' +
+              '<div><strong>Time:</strong> ' + new Date(result.timestamp).toLocaleString() + '</div>';
+          
+          if (output) {
+              resultsDiv.innerHTML += '<h4>Output:</h4><div class="test-output ' + statusClass + '">' + output + '</div>';
+          }
+          
+          if (errorOutput) {
+              resultsDiv.innerHTML += '<h4>Error Output:</h4><div class="test-output test-error">' + errorOutput + '</div>';
+          }
+          
+          lastTestOutput = (output + errorOutput).trim();
+          modal.classList.add('show');
+      }
+      
+      function closeTestModal() {
+          document.getElementById('test-modal').classList.remove('show');
+      }
+      
+      async function copyTestOutput() {
+          if (lastTestOutput) {
+              const copied = await copyToClipboard(lastTestOutput);
+              setStatus(copied ? 'Test output copied to clipboard' : 'Failed to copy test output');
+          }
+      }
+      
+      async function loadDirectoryTree() {
+          try {
+              const tree = await apiCall('tree');
+              const treeContent = document.getElementById('directory-tree-content');
+              treeContent.innerHTML = renderDirectoryTree(tree);
+          } catch (err) {
+              document.getElementById('directory-tree-content').innerHTML = 'Error loading tree';
+          }
+      }
+      
+      function renderDirectoryTree(items) {
+          if (!items || items.length === 0) {
+              return '<div class="empty-state">No files found</div>';
+          }
+          
+          return items.map(function(item) {
+              const indent = '  '.repeat(item.level);
+              if (item.type === 'directory') {
+                  const icon = '📁';
+                  const children = item.children && item.children.length > 0 ? 
+                      '\\n' + renderDirectoryTree(item.children) : '';
+                  return '<div class="tree-folder">' + indent + icon + ' ' + item.name + '</div>' + children;
+              } else {
+                  const icon = getFileIcon(item.name);
+                  const sizeInfo = item.lines ? ' (' + item.lines + ' lines)' : '';
+                  return '<div class="tree-file">' + indent + icon + ' ' + item.name + '<span class="file-size">' + sizeInfo + '</span></div>';
+              }
+          }).join('\\n');
+      }
+      
+      function getFileIcon(filename) {
+          const ext = filename.split('.').pop().toLowerCase();
+          const icons = {
+              'js': '📄',
+              'jsx': '⚛️',
+              'ts': '📘',
+              'tsx': '⚛️',
+              'py': '🐍',
+              'java': '☕',
+              'cpp': '⚙️',
+              'c': '⚙️',
+              'h': '📋',
+              'css': '🎨',
+              'html': '🌐',
+              'md': '📝',
+              'json': '📋',
+              'yml': '⚙️',
+              'yaml': '⚙️',
+              'xml': '📋',
+              'php': '🐘',
+              'rb': '💎',
+              'go': '🐹',
+              'rs': '🦀',
+              'vue': '💚',
+              'svelte': '🧡'
+          };
+          return icons[ext] || '📄';
+      }
+      
+      // Initialize
+      refreshStatus();
+      loadSnapshots();
+      loadDirectoryTree();
+      loadPatchHistory();
+      `;
+}
+
+
+module.exports = { generateJS };
+--- ENDFILE ---
+
+--- FILE: src/dashProject.js ---
+const fs = require('fs');
+const path = require('path');
+
+class ProjectManager {
+  constructor(projectDir, shouldIncludeFileCallback, shouldSkipDirectoryCallback) {
+    this.projectDir = projectDir;
+    this.shouldIncludeFile = shouldIncludeFileCallback;
+    this.shouldSkipDirectory = shouldSkipDirectoryCallback;
+  }
+
+  scanProject() {
+    const files = {};
+    
+    const scanDirectory = (dir, relativePath = '') => {
+      try {
+        const items = fs.readdirSync(dir);
+        
+        for (const item of items) {
+          const fullPath = path.join(dir, item);
+          const relativeFilePath = path.posix.join(relativePath, item);
+          
+          const stat = fs.lstatSync(fullPath);
+          
+          if (stat.isDirectory()) {
+            if (!this.shouldSkipDirectory(relativeFilePath)) {
+              scanDirectory(fullPath, relativeFilePath);
+            }
+          } else if (stat.isFile()) {
+            if (this.shouldIncludeFile(relativeFilePath)) {
+              try {
+                const content = fs.readFileSync(fullPath, 'utf8');
+                files[relativeFilePath] = content;
+              } catch (err) {
+                console.warn(`Warning: Could not read file ${relativeFilePath}: ${err.message}`);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`Warning: Could not read directory ${dir}: ${err.message}`);
+      }
+    };
+    
+    scanDirectory(this.projectDir);
+    return files;
+  }
+
+  getDirectoryTree() {
+    const tree = [];
+    
+    const buildTree = (dir, relativePath = '', level = 0) => {
+      try {
+        const items = fs.readdirSync(dir);
+        
+        for (const item of items) {
+          const fullPath = path.join(dir, item);
+          const relativeFilePath = path.posix.join(relativePath, item);
+          
+          const stat = fs.lstatSync(fullPath);
+          
+          if (stat.isDirectory()) {
+            if (!this.shouldSkipDirectory(relativeFilePath)) {
+              const dirNode = {
+                name: item,
+                type: 'directory',
+                level: level,
+                children: []
+              };
+              buildTree(fullPath, relativeFilePath, level + 1).forEach(child => {
+                dirNode.children.push(child);
+              });
+              tree.push(dirNode);
+            }
+          } else if (stat.isFile()) {
+            if (this.shouldIncludeFile(relativeFilePath)) {
+              try {
+                const content = fs.readFileSync(fullPath, 'utf8');
+                const lines = content.split('\n').length;
+                tree.push({
+                  name: item,
+                  type: 'file',
+                  level: level,
+                  lines: lines,
+                  path: relativeFilePath
+                });
+              } catch (err) {
+                console.warn(`Warning: Could not read file ${relativeFilePath}: ${err.message}`);
+                tree.push({
+                  name: item,
+                  type: 'file',
+                  level: level,
+                  lines: 0,
+                  path: relativeFilePath
+                });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`Warning: Could not read directory ${dir}: ${err.message}`);
+      }
+      
+      return tree.filter(Boolean);
+    };
+    
+    return buildTree(this.projectDir);
+  }
+
+  extractInterface(files) {
+    let content = `# PROJECT INTERFACE EXTRACTION\n\n`;
+    content += `This shows only the exports/interfaces of each file. To see the full content of any file, use:\n\n`;
+    content += `\`\`\`\n=== REQUEST ===\nREQUEST_FILES: filename.js, another-file.py\n\`\`\`\n\n`;
+    content += `---\n\n=== PROJECT INTERFACE ===\n`;
+    content += `Project: ${path.basename(this.projectDir)}\n`;
+    content += `Timestamp: ${new Date().toISOString()}\n`;
+    content += `Files: ${Object.keys(files).length}\n\n`;
+
+    Object.entries(files).forEach(([filePath, fileContent]) => {
+      content += `--- FILE: ${filePath} ---\n`;
+      
+      const exports = this.extractFileInterface(filePath, fileContent);
+      if (exports.length > 0) {
+        content += `// Exports found - use REQUEST_FILES to see full content\n\n`;
+        exports.forEach(exportLine => {
+          content += exportLine + '\n';
+        });
+      } else {
+        content += `// No exports detected - showing full content\n\n${fileContent}`;
+      }
+      
+      content += `\n\n`;
+    });
+
+    return content;
+  }
+
+  extractFileInterface(filePath, content) {
+    const exports = [];
+    const lines = content.split('\n');
+    const ext = path.extname(filePath).toLowerCase();
+    
+    if (ext === '.js' || ext === '.ts' || ext === '.jsx' || ext === '.tsx') {
+      // JavaScript/TypeScript exports
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('export ') || 
+            trimmed.startsWith('exports.') || 
+            trimmed.includes('module.exports')) {
+          exports.push(line);
+        }
+      }
+      
+      // Special handling for module.exports objects
+      const moduleExportsMatch = content.match(/module\.exports\s*=\s*\{[\s\S]*?\}/);
+      if (moduleExportsMatch) {
+        const fullExport = moduleExportsMatch[0];
+        if (exports.some(line => line.includes('module.exports ='))) {
+          exports.push(fullExport);
+        }
+      }
+    } else if (ext === '.py') {
+      // Python exports (functions, classes, variables at module level)
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        if (trimmed.startsWith('def ') || 
+            trimmed.startsWith('class ') || 
+            (trimmed.match(/^[a-zA-Z_][a-zA-Z0-9_]*\s*=/) && !line.startsWith(' '))) {
+          exports.push(line);
+        }
+      }
+    } else if (ext === '.json') {
+      // JSON - show top-level keys
+      try {
+        const parsed = JSON.parse(content);
+        if (typeof parsed === 'object' && parsed !== null) {
+          const keys = Object.keys(parsed);
+          exports.push(`// JSON keys: ${keys.join(', ')}`);
+          keys.slice(0, 5).forEach(key => {
+            const type = typeof parsed[key];
+            exports.push(`// ${key}: ${type}`);
+          });
+        }
+      } catch {
+        exports.push('// Invalid JSON');
+      }
+    } else if (ext === '.css' || ext === '.scss') {
+      // CSS - show main selectors
+      const selectors = content.match(/[.#]?[a-zA-Z][a-zA-Z0-9_-]*\s*\{/g);
+      if (selectors) {
+        const uniqueSelectors = [...new Set(selectors.map(s => s.replace(/\s*\{$/, '')))];
+        exports.push(`/* CSS selectors: ${uniqueSelectors.slice(0, 10).join(', ')} */`);
+      }
+    } else if (ext === '.html') {
+      // HTML - show title and main elements
+      const titleMatch = content.match(/<title>(.*?)<\/title>/i);
+      if (titleMatch) {
+        exports.push(`<!-- Title: ${titleMatch[1]} -->`);
+      }
+      const tags = content.match(/<(h1|h2|h3|div|section|article|nav|header|footer|main)/gi);
+      if (tags) {
+        const uniqueTags = [...new Set(tags.map(t => t.replace(/[<>]/g, '')))];
+        exports.push(`<!-- Main elements: ${uniqueTags.slice(0, 10).join(', ')} -->`);
+      }
+    }
+    
+    return exports;
+  }
+
+  // HTTP handlers for project endpoints
+  handleExtract(req, res, projectName) {
+    const files = this.scanProject();
+    const extractedContent = this.generateExtractContent(files, projectName);
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+      content: extractedContent,
+      fileCount: Object.keys(files).length 
+    }));
+  }
+
+  handleExtractInterface(req, res, projectName) {
+    const files = this.scanProject();
+    const interfaceContent = this.extractInterface(files);
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+      content: interfaceContent,
+      fileCount: Object.keys(files).length 
+    }));
+  }
+
+  handleDirectoryTree(req, res) {
+    const tree = this.getDirectoryTree();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(tree));
+  }
+
+  generateExtractContent(files, projectName) {
+    let content = `=== PROJECT EXTRACTION ===\n`;
+    content += `Project: ${projectName}\n`;
+    content += `Timestamp: ${new Date().toISOString()}\n`;
+    content += `Files: ${Object.keys(files).length}\n\n`;
+
+    Object.entries(files).forEach(([filePath, fileContent]) => {
+      content += `--- FILE: ${filePath} ---\n${fileContent}\n\n`;
+    });
+
+    return content;
+  }
+}
+
+module.exports = { ProjectManager };
+--- ENDFILE ---
+
+--- FILE: src/dashGenerateCss.js ---
+function generateCSS() {
+   
+   return `
+       * {
+           margin: 0;
+           padding: 0;
+           box-sizing: border-box;
+       }
+       
+       body {
+           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+           background: #0f172a;
+           color: #e2e8f0;
+           line-height: 1.5;
+       }
+       
+       .container {
+           max-width: 1400px;
+           margin: 0 auto;
+           padding: 0.75rem;
+       }
+       
+       .header {
+           text-align: center;
+           margin-bottom: 1.5rem;
+           padding: 1rem;
+           background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+           border-radius: 8px;
+           border: 1px solid #475569;
+       }
+       
+       .header h1 {
+           color: #10b981;
+           font-size: 2rem;
+           font-weight: 700;
+           margin-bottom: 0.25rem;
+           text-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+       }
+       
+       .header p {
+           color: #94a3b8;
+           font-size: 1rem;
+       }
+       
+       .status {
+           background: #1e293b;
+           border: 1px solid #475569;
+           border-radius: 6px;
+           padding: 0.75rem;
+           margin-bottom: 1.5rem;
+           text-align: center;
+       }
+       
+       #status-text {
+           font-weight: 600;
+           color: #10b981;
+           font-size: 1rem;
+       }
+       
+       #status-info {
+           color: #94a3b8;
+           font-size: 0.85rem;
+           margin-top: 0.25rem;
+       }
+       
+       .grid {
+           display: grid;
+           grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+           gap: 1rem;
+       }
+       
+       .card {
+           background: #1e293b;
+           border: 1px solid #475569;
+           border-radius: 8px;
+           padding: 1rem;
+           box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+       }
+       
+       .card h2 {
+           color: #f1f5f9;
+           margin-bottom: 0.75rem;
+           font-size: 1.2rem;
+           font-weight: 600;
+       }
+       
+       .card.patch h2 {
+           color: #fbbf24;
+       }
+       
+       .card.snapshot h2 {
+           color: #8b5cf6;
+       }
+       
+       .card.history h2 {
+           color: #06b6d4;
+       }
+       
+       .card.files h2 {
+           color: #10b981;
+       }
+       
+       .card.future h2 {
+           color: #f59e0b;
+       }
+       
+       button {
+           background: #10b981;
+           color: white;
+           border: none;
+           padding: 0.5rem 1rem;
+           border-radius: 6px;
+           cursor: pointer;
+           font-weight: 600;
+           font-size: 0.875rem;
+           transition: all 0.2s;
+           margin: 0.25rem 0.25rem 0.25rem 0;
+           display: inline-block;
+       }
+       
+       button:hover {
+           background: #059669;
+           transform: translateY(-1px);
+           box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+       }
+       
+       button.secondary {
+           background: #64748b;
+       }
+       
+       button.secondary:hover {
+           background: #475569;
+           box-shadow: 0 4px 12px rgba(100, 116, 139, 0.4);
+       }
+       
+       button.warning {
+           background: #f59e0b;
+       }
+       
+       button.warning:hover {
+           background: #d97706;
+           box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4);
+       }
+       
+       button.success {
+           background: #10b981;
+       }
+       
+       button.success:hover {
+           background: #059669;
+           box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+       }
+       
+       textarea {
+           width: 100%;
+           min-height: 180px;
+           background: #0f172a;
+           border: 1px solid #475569;
+           border-radius: 6px;
+           padding: 0.75rem;
+           color: #e2e8f0;
+           font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+           font-size: 0.85rem;
+           line-height: 1.5;
+           resize: vertical;
+           margin-bottom: 0.75rem;
+       }
+       
+       textarea:focus {
+           outline: none;
+           border-color: #10b981;
+           box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+       }
+       
+       .info {
+           color: #94a3b8;
+           font-size: 0.8rem;
+           margin-top: 0.5rem;
+           padding: 0.25rem 0;
+       }
+       
+       .snapshot-list, .patch-history {
+           margin-top: 0.75rem;
+           max-height: 280px;
+           overflow-y: auto;
+           background: #0f172a;
+           border: 1px solid #374151;
+           border-radius: 6px;
+           padding: 0.5rem;
+           font-size: 0.875rem;
+           line-height: 1.4;
+       }
+       
+       .list-item {
+           margin-bottom: 0.75rem;
+           padding-bottom: 0.5rem;
+           border-bottom: 1px solid #374151;
+       }
+       
+       .list-item:last-child {
+           margin-bottom: 0;
+           border-bottom: none;
+           padding-bottom: 0;
+       }
+       
+       .item-main {
+           display: block;
+           font-weight: 600;
+           color: #f1f5f9;
+           margin-bottom: 0.25rem;
+       }
+       
+       .item-meta {
+           display: block;
+           font-size: 0.75rem;
+           color: #94a3b8;
+           margin-bottom: 0.25rem;
+       }
+       
+       .item-link {
+           color: #3b82f6;
+           text-decoration: none;
+           font-size: 0.8rem;
+           font-weight: 500;
+           transition: color 0.2s;
+       }
+       
+       .item-link:hover {
+           color: #60a5fa;
+           text-decoration: underline;
+       }
+       
+       .empty-state {
+           text-align: center;
+           padding: 1.5rem 1rem;
+           color: #64748b;
+           font-style: italic;
+           font-size: 0.875rem;
+       }
+       
+       .directory-tree {
+           background: #0f172a;
+           border: 1px solid #374151;
+           border-radius: 6px;
+           padding: 0.75rem;
+           font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+           font-size: 0.8rem;
+           max-height: 350px;
+           overflow-y: auto;
+           line-height: 1.3;
+       }
+       
+       .tree-folder {
+           color: #fbbf24;
+           font-weight: 600;
+           margin: 0.1rem 0;
+       }
+       
+       .tree-file {
+           color: #94a3b8;
+           margin: 0.1rem 0;
+       }
+       
+       .file-size {
+           color: #64748b;
+           font-size: 0.75rem;
+           margin-left: 0.5rem;
+       }
+       
+       .tree-indent {
+           margin-left: 1rem;
+       }
+       
+       .file-list {
+           max-height: 280px;
+           overflow-y: auto;
+           background: #0f172a;
+           border: 1px solid #374151;
+           border-radius: 6px;
+           padding: 0.75rem;
+           margin-top: 0.75rem;
+       }
+       
+       .file-item {
+           padding: 0.4rem;
+           margin: 0.2rem 0;
+           background: #1e293b;
+           border-radius: 4px;
+           font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+           font-size: 0.8rem;
+       }
+       
+       .preview {
+           margin-top: 1.5rem;
+           background: #1e293b;
+           border: 1px solid #475569;
+           border-radius: 8px;
+           padding: 1rem;
+       }
+       
+       .preview h3 {
+           color: #10b981;
+           margin-bottom: 0.75rem;
+       }
+       
+       .preview pre {
+           background: #0f172a;
+           border: 1px solid #374151;
+           border-radius: 6px;
+           padding: 0.75rem;
+           overflow-x: auto;
+           font-size: 0.8rem;
+           line-height: 1.4;
+           color: #e2e8f0;
+       }
+       
+       .modal {
+           display: none;
+           position: fixed;
+           top: 0;
+           left: 0;
+           width: 100%;
+           height: 100%;
+           background: rgba(0, 0, 0, 0.8);
+           z-index: 1000;
+           opacity: 0;
+           transition: opacity 0.3s ease;
+       }
+       
+       .modal.show {
+           display: flex;
+           align-items: center;
+           justify-content: center;
+           opacity: 1;
+       }
+       
+       .modal-content {
+           background: #1e293b;
+           border: 1px solid #475569;
+           border-radius: 8px;
+           padding: 1.5rem;
+           max-width: 80vw;
+           max-height: 80vh;
+           overflow-y: auto;
+           position: relative;
+           box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+       }
+       
+       .modal-close {
+           position: absolute;
+           top: 0.75rem;
+           right: 0.75rem;
+           background: #ef4444;
+           color: white;
+           border: none;
+           width: 1.75rem;
+           height: 1.75rem;
+           border-radius: 50%;
+           cursor: pointer;
+           font-size: 1rem;
+           font-weight: bold;
+           display: flex;
+           align-items: center;
+           justify-content: center;
+       }
+       
+       .modal-close:hover {
+           background: #dc2626;
+       }
+       
+       .modal h3 {
+           color: #10b981;
+           margin-bottom: 1rem;
+           font-size: 1.3rem;
+       }
+       
+       .test-output {
+           background: #0f172a;
+           border: 1px solid #374151;
+           border-radius: 6px;
+           padding: 0.75rem;
+           font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+           font-size: 0.8rem;
+           line-height: 1.4;
+           white-space: pre-wrap;
+           word-wrap: break-word;
+           max-height: 400px;
+           overflow-y: auto;
+           margin: 0.5rem 0;
+       }
+       
+       .test-success {
+           border-color: #10b981;
+           color: #d1fae5;
+       }
+       
+       .test-error {
+           border-color: #ef4444;
+           color: #fecaca;
+       }
+       
+       @media (max-width: 768px) {
+           .container {
+               padding: 0.5rem;
+           }
+           
+           .grid {
+               grid-template-columns: 1fr;
+               gap: 0.75rem;
+           }
+           
+           .header h1 {
+               font-size: 1.75rem;
+           }
+           
+           .card {
+               padding: 0.75rem;
+           }
+           
+           .modal-content {
+               max-width: 95vw;
+               max-height: 90vh;
+               padding: 1rem;
+           }
+           
+           /* Reduce max-height on mobile for better space usage */
+           .snapshot-list, .patch-history, .directory-tree {
+               max-height: 220px;
+           }
+           
+           textarea {
+               min-height: 150px;
+           }
+       }
+       `;
+}
+
+module.exports = { generateCSS };
+--- ENDFILE ---

@@ -1,0 +1,311 @@
+#!/bin/bash
+
+# Vibedash Control Script
+# Usage: dash start|stop|status
+
+CURRENT_DIR=$(pwd)
+VIBEDASH_SCRIPT="$(dirname "$0")/src/dash.js"
+INSTANCE_DIR="/tmp/vibedash-instances"
+
+# Ensure instance directory exists
+mkdir -p "$INSTANCE_DIR"
+
+# Function to get the instance file for current directory
+get_instance_file() {
+    local dir_hash=$(echo -n "$CURRENT_DIR" | md5sum | cut -d' ' -f1 2>/dev/null || echo -n "$CURRENT_DIR" | md5 2>/dev/null || echo "fallback")
+    echo "$INSTANCE_DIR/vibedash-$dir_hash.json"
+}
+
+# Function to check if Vibedash is running for current directory
+is_running() {
+    local instance_file=$(get_instance_file)
+    
+    if [[ ! -f "$instance_file" ]]; then
+        return 1
+    fi
+    
+    # Parse JSON to get PID - more robust parsing
+    local pid=$(cat "$instance_file" | grep '"pid"' | sed 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
+    
+    if [[ -z "$pid" ]] || [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    
+    # Check if process is still running and is actually vibedash
+    if ps -p "$pid" >/dev/null 2>&1 && ps -p "$pid" -o args= 2>/dev/null | grep -q "vibedash"; then
+        return 0
+    else
+        # Clean up stale instance file
+        rm -f "$instance_file"
+        return 1
+    fi
+}
+
+# Function to get port from instance file
+get_port() {
+    local instance_file=$(get_instance_file)
+    
+    if [[ -f "$instance_file" ]]; then
+        cat "$instance_file" | grep '"port"' | sed 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/' | head -1
+    fi
+}
+
+# Function to start Vibedash
+start_vibedash() {
+    echo "🚀 Starting Vibedash for: $CURRENT_DIR"
+    
+    if is_running; then
+        local port=$(get_port)
+        echo "✅ Vibedash is already running on port $port"
+        echo "   Open http://localhost:$port in your browser"
+        return 0
+    fi
+    
+    if [[ ! -f "$VIBEDASH_SCRIPT" ]]; then
+        echo "❌ Error: vibedash.js not found at $VIBEDASH_SCRIPT"
+        echo "   Current script location: $(dirname "$0")"
+        echo "   Looking for: $VIBEDASH_SCRIPT"
+        return 1
+    fi
+    
+    # Check if vibedash.js is executable
+    if [[ ! -x "$VIBEDASH_SCRIPT" ]]; then
+        echo "⚠️  Making vibedash.js executable..."
+        chmod +x "$VIBEDASH_SCRIPT"
+    fi
+    
+    # Create a log file for debugging
+    local log_file="/tmp/vibedash-$(basename "$CURRENT_DIR")-$.log"
+    
+    echo "📝 Starting with log file: $log_file"
+    echo "   Command: node \"$VIBEDASH_SCRIPT\" \"$CURRENT_DIR\""
+    
+    # Start Vibedash in background with logging
+    node "$VIBEDASH_SCRIPT" "$CURRENT_DIR" > "$log_file" 2>&1 &
+    local pid=$!
+    
+    echo "   Started with PID: $pid"
+    
+    # Wait a moment for it to start and check multiple times
+    for i in {1..10}; do
+        sleep 1
+        echo -n "."
+        
+        if is_running; then
+            echo ""
+            local port=$(get_port)
+            echo "✅ Vibedash started successfully!"
+            echo "   Project: $(basename "$CURRENT_DIR")"
+            echo "   Directory: $CURRENT_DIR"
+            echo "   Port: $port"
+            echo "   PID: $pid"
+            echo "   URL: http://localhost:$port"
+            echo "   Log: $log_file"
+            return 0
+        fi
+        
+        # Check if process is still alive
+        if ! ps -p "$pid" >/dev/null 2>&1; then
+            echo ""
+            echo "❌ Process died during startup"
+            break
+        fi
+    done
+    
+    echo ""
+    echo "❌ Failed to start Vibedash"
+    echo "   Process PID: $pid"
+    
+    # Check if process is still running
+    if ps -p "$pid" >/dev/null 2>&1; then
+        echo "   Process is still running, but no instance file found"
+    else
+        echo "   Process has exited"
+    fi
+    
+    # Show log file contents for debugging
+    if [[ -f "$log_file" ]]; then
+        echo ""
+        echo "📋 Log file contents ($log_file):"
+        echo "----------------------------------------"
+        cat "$log_file"
+        echo "----------------------------------------"
+    fi
+    
+    return 1
+}
+
+# Function to stop Vibedash
+stop_vibedash() {
+    echo "🛑 Stopping Vibedash for: $CURRENT_DIR"
+    
+    if ! is_running; then
+        echo "ℹ️  Vibedash is not running for this directory"
+        return 0
+    fi
+    
+    local instance_file=$(get_instance_file)
+    local pid=$(cat "$instance_file" | grep '"pid"' | sed 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
+    
+    # Kill the process
+    if kill "$pid" 2>/dev/null; then
+        echo "✅ Vibedash stopped (PID: $pid)"
+        
+        # Wait for cleanup
+        sleep 1
+        
+        # Remove instance file if it still exists
+        rm -f "$instance_file"
+    else
+        echo "❌ Failed to stop Vibedash (PID: $pid)"
+        # Clean up stale instance file anyway
+        rm -f "$instance_file"
+        return 1
+    fi
+}
+
+# Function to show status
+show_status() {
+    echo "📊 Vibedash Status for: $CURRENT_DIR"
+    echo
+    
+    if is_running; then
+        local instance_file=$(get_instance_file)
+        local pid=$(cat "$instance_file" | grep '"pid"' | sed 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
+        local port=$(get_port)
+        local project_name=$(basename "$CURRENT_DIR")
+        
+        echo "✅ Status: Running"
+        echo "   Project: $project_name"
+        echo "   Directory: $CURRENT_DIR"
+        echo "   PID: $pid"
+        echo "   Port: $port"
+        echo "   URL: http://localhost:$port"
+        echo "   Instance file: $(get_instance_file)"
+        
+        # Show process info
+        echo
+        echo "Process info:"
+        ps -p "$pid" -o pid,ppid,etime,args 2>/dev/null || echo "   Could not get process info"
+    else
+        echo "❌ Status: Not running"
+        echo "   Instance file: $(get_instance_file)"
+        
+        # Check for stale log files
+        local log_pattern="/tmp/vibedash-$(basename "$CURRENT_DIR")-*.log"
+        if ls $log_pattern 2>/dev/null | head -1 >/dev/null; then
+            echo "   Recent log files found:"
+            ls -lt $log_pattern 2>/dev/null | head -3 | while read line; do
+                echo "     $line"
+            done
+        fi
+    fi
+    
+    echo
+    echo "All Vibedash instances:"
+    
+    # List all running instances
+    local found_any=false
+    for instance_file in "$INSTANCE_DIR"/vibedash-*.json; do
+        if [[ -f "$instance_file" ]]; then
+            local pid=$(cat "$instance_file" | grep '"pid"' | sed 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
+            local project_dir=$(cat "$instance_file" | grep '"projectDir"' | sed 's/.*"projectDir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+            local port=$(cat "$instance_file" | grep '"port"' | sed 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
+            
+            if ps -p "$pid" >/dev/null 2>&1; then
+                echo "  • $(basename "$project_dir") - $project_dir:$port (PID: $pid)"
+                found_any=true
+            else
+                # Clean up stale file
+                rm -f "$instance_file"
+            fi
+        fi
+    done
+    
+    if [[ "$found_any" == false ]]; then
+        echo "  (none)"
+    fi
+}
+
+# Function to show debug info
+show_debug() {
+    echo "🔍 Debug Information"
+    echo
+    echo "Environment:"
+    echo "  Current directory: $CURRENT_DIR"
+    echo "  Script location: $(dirname "$0")"
+    echo "  Vibedash script: $VIBEDASH_SCRIPT"
+    echo "  Instance directory: $INSTANCE_DIR"
+    echo "  Instance file: $(get_instance_file)"
+    echo
+    echo "File checks:"
+    echo "  Vibedash script exists: $(test -f "$VIBEDASH_SCRIPT" && echo "YES" || echo "NO")"
+    echo "  Vibedash script executable: $(test -x "$VIBEDASH_SCRIPT" && echo "YES" || echo "NO")"
+    echo "  Instance directory exists: $(test -d "$INSTANCE_DIR" && echo "YES" || echo "NO")"
+    echo "  Instance directory writable: $(test -w "$INSTANCE_DIR" && echo "YES" || echo "NO")"
+    echo
+    echo "System:"
+    echo "  Node.js version: $(node --version 2>/dev/null || echo "NOT FOUND")"
+    echo "  System: $(uname -s)"
+    echo "  md5sum available: $(which md5sum >/dev/null 2>&1 && echo "YES" || echo "NO")"
+    echo "  md5 available: $(which md5 >/dev/null 2>&1 && echo "YES" || echo "NO")"
+    
+    if [[ -f "$VIBEDASH_SCRIPT" ]]; then
+        echo
+        echo "Vibedash script test:"
+        echo "  Testing: node \"$VIBEDASH_SCRIPT\" --help"
+        timeout 5s node "$VIBEDASH_SCRIPT" --help 2>&1 || echo "  Test failed or timed out"
+    fi
+}
+
+# Function to show usage
+show_usage() {
+    echo "Vibedash Control Script"
+    echo
+    echo "Usage: $0 <command>"
+    echo
+    echo "Commands:"
+    echo "  start   - Start Vibedash for current directory"
+    echo "  stop    - Stop Vibedash for current directory"
+    echo "  status  - Show status of Vibedash instances"
+    echo "  debug   - Show debug information"
+    echo "  help    - Show this help message"
+    echo
+    echo "Examples:"
+    echo "  cd /path/to/my/project"
+    echo "  $0 start     # Start Vibedash for this project"
+    echo "  $0 status    # Check if running"
+    echo "  $0 stop      # Stop Vibedash for this project"
+    echo "  $0 debug     # Show debug info if there are issues"
+}
+
+# Main script logic
+case "${1:-}" in
+    "start")
+        start_vibedash
+        ;;
+    "stop")
+        stop_vibedash
+        ;;
+    "status")
+        show_status
+        ;;
+    "debug")
+        show_debug
+        ;;
+    "help"|"-h"|"--help")
+        show_usage
+        ;;
+    "")
+        echo "❌ Error: No command specified"
+        echo
+        show_usage
+        exit 1
+        ;;
+    *)
+        echo "❌ Error: Unknown command '$1'"
+        echo
+        show_usage
+        exit 1
+        ;;
+esac

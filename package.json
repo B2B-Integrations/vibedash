@@ -1,0 +1,30 @@
+{
+  "name": "vibedash",
+  "version": "1.0.0",
+  "description": "Local web server for LLM-assisted development workflow",
+  "main": "vibedash.js",
+  "bin": {
+    "vibedash": "./vibedash.js",
+    "dash": "./dash"
+  },
+  "scripts": {
+    "start": "node vibedash.js",
+    "dev": "node vibedash.js"
+  },
+  "keywords": [
+    "llm",
+    "development",
+    "ai",
+    "vibedash",
+    "patch",
+    "local"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "acorn": "^8.15.0"
+  }
+}
