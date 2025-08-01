@@ -1,3 +1,5 @@
+![Alt text](img/logo.png)
+
 # Vibedash
 Vibe Coding front-end utility
 
