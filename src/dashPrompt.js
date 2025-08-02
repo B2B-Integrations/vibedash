@@ -11,7 +11,7 @@ When you want to create or modify files, use this exact format:
 --- FILE: path/to/file.js ---
 // Complete file content goes here
 // This will replace or create the entire file
-
+--- ENDFILE ---
 --- FILE: another/file.py ---
 # Another complete file
 print("Hello, world!")
