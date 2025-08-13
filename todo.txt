@@ -1,0 +1,2 @@
+- Add support for LLMs over API
+- For LLMs using the gui, add backtick into the prompt rules   ```patch``` this makes it easier on copy and paste
